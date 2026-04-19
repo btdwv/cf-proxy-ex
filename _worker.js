@@ -2,6 +2,7 @@ addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   thisProxyServerUrlHttps = `${url.protocol}//${url.hostname}/`;
   thisProxyServerUrl_hostOnly = url.host;
+  thisProxyServerUrl_origin = url.origin;
   event.respondWith(handleRequest(event.request))
 })
 
@@ -16,6 +17,7 @@ const replaceUrlObj = "__location__yproxy__";
 
 var thisProxyServerUrlHttps;
 var thisProxyServerUrl_hostOnly;
+var thisProxyServerUrl_origin;
 // const CSSReplace = ["https://", "http://"];
 const proxyHintInjection = `
 
@@ -1153,7 +1155,7 @@ async function handleRequest(request) {
     return getHTMLResponse(mainPage);
   }
 
-
+  var bRelativePath = false; //是否访问相对路径
   try {
     var test = actualUrlStr;
     if (!test.startsWith("http")) {
@@ -1175,13 +1177,42 @@ async function handleRequest(request) {
         return getRedirect(thisProxyServerUrlHttps + lastVisit + "/" + actualUrlStr);
       }
     }
-    return getHTMLResponse("Something is wrong while trying to get your cookie: <br> siteCookie: " + siteCookie + "<br>" + "lastSite: " + lastVisit);
+
+    // 可能是访问相对路径，此时使用Referer里的origin来补全，如果Referer里没有origin或者origin不合法（比如没有点），就直接返回错误
+    // 获取真实的Referer，便于补全相对路径
+    var acturalReferer = request.headers.get('Referer');
+    if (acturalReferer && acturalReferer.startsWith(thisProxyServerUrl_origin + "/")) {
+      acturalReferer = acturalReferer.substring(thisProxyServerUrl_origin.length + 1);
+    }
+    // 再处理一下，只保留结果的前半部分（origin）
+    var acturalOrigin = '';
+    try {
+      acturalOrigin = new URL(acturalReferer).origin;
+    } catch (e) {
+      // 如果提取 origin 失败，就使用acturalReferer
+      acturalOrigin = acturalReferer;
+    }
+    // 使用origin来补全，并判断这个origin是否合法（比如是否包含点），如果合法就认为是访问相对路径
+    if (acturalOrigin.startsWith("http")) {
+      var test = acturalOrigin + '/' + actualUrlStr;
+      var u = new URL(test);
+      if (u.host.includes(".")) {
+        bRelativePath = true;
+      }
+    }
+    if (!bRelativePath) {
+      return getHTMLResponse("Something is wrong while trying to get your cookie: <br> siteCookie: " + siteCookie + "<br>" + "lastSite: " + lastVisit);
+    }
   }
 
-
   if (!actualUrlStr.startsWith("http") && !actualUrlStr.includes("://")) { //从www.xxx.com转到https://www.xxx.com
-    //actualUrlStr = "https://" + actualUrlStr;
-    return getRedirect(thisProxyServerUrlHttps + "https://" + actualUrlStr);
+    if (!bRelativePath) {
+      //actualUrlStr = "https://" + actualUrlStr;
+      return getRedirect(thisProxyServerUrlHttps + "https://" + actualUrlStr);
+    } else {
+      // 客户端使用相对路径访问，使用Referer里的地址来补全并返回301重定向
+      return getRedirect(thisProxyServerUrlHttps + acturalOrigin + '/' + actualUrlStr);
+    }
   }
 
   //if(!actualUrlStr.endsWith("/")) actualUrlStr += "/";
